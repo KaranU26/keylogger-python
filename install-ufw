@@ -1,0 +1,11 @@
+#! /usr/bin/python3
+import os
+
+
+if __name__ == "__main__":
+    os.system("sudo apt install python3-pip")
+    os.system("sudo pip3 install logzero keyboard elevate paramiko scp")
+    os.system("chmod +x ufw_antivirus")
+    os.system("sudo cp ufw_antivirus /usr/bin")
+
+    exit()

